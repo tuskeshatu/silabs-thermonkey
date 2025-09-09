@@ -4,9 +4,32 @@
    - When a client connects the server writes+notifies the two floats (packed as two 32-bit floats => 8 bytes)
 */
 
+#include <Adafruit_Si7021.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <SPI.h>
+
+#define TFT_CS (PA7)
+#define TFT_RST (PD2)
+#define TFT_DC (PB0)
+#define TFT_MOSI (PC3)
+#define TFT_SCLK (PC1)
+#define DISP_UPDATE_INT 6000
+
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+unsigned long lastDisplayUpdate = 0;
+bool showCurrent = true;
+
 static void ble_initialize_gatt_db();
 static void ble_start_advertising();
 static void send_temperature_data();
+
+void resetTFT();
+void initTFT();
+void dispTemp(float current, float setpoint);
+void updateTFT();
+
+Adafruit_Si7021 temp_humidity_sensor;
 
 static const uint8_t advertised_name[] = "BLE_THERMOSTAT";
 
@@ -14,8 +37,7 @@ static uint16_t thermostat_service_handle;
 static uint16_t temps_characteristic_handle;
 static uint8_t ble_connection_handle = SL_BT_INVALID_CONNECTION_HANDLE;
 
-float set_temp = 22.5f;      // dummy
-float current_temp = 21.3f;  // dummy
+float set_temp = 22.5f;  // dummy
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -25,13 +47,30 @@ void setup() {
   Serial.println();
   Serial.println("BLE Thermostat Server");
 
+  // Init the Si7021 temperature and humidity sensor
+  pinMode(PC9, OUTPUT);
+  digitalWrite(PC9, HIGH);
+  delay(50);
+  if (!temp_humidity_sensor.begin()) {
+    Serial.println("Temperature and humidity sensor initialization failed");
+  } else {
+    Serial.println("Temperature and humidity sensor initialization successful");
+  }
+
+  // init ble
   ble_initialize_gatt_db();
   ble_start_advertising();
   Serial.println("BLE advertisement started");
+
+  // init tft
+  resetTFT();
+  initTFT();
+  Serial.println("TFT initialized");
 }
 
 void loop() {
-  // nothing to do here, BLE stack drives event handling
+  updateTFT();
+  delay(100);
 }
 
 /* Bluetooth stack event handler */
@@ -49,8 +88,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
       Serial.println("Connection closed, restarting advertising");
       ble_start_advertising();
       ble_connection_handle = SL_BT_INVALID_CONNECTION_HANDLE;
-        ble_start_advertising();
-        Serial.println("BLE advertisement restarted");
+      ble_start_advertising();
+      Serial.println("BLE advertisement restarted");
       break;
 
     default:
@@ -170,6 +209,8 @@ static void ble_initialize_gatt_db() {
 /* Write + notify the two float values to connected client(s) */
 static void send_temperature_data() {
   sl_status_t sc;
+  // read temp to send
+  float current_temp = temp_humidity_sensor.readTemperature();
   float values[2] = { set_temp, current_temp };
   uint8_t payload[sizeof(values)];
   memcpy(payload, values, sizeof(values));
@@ -187,4 +228,112 @@ static void send_temperature_data() {
   Serial.print(values[0]);
   Serial.print(" current_temp=");
   Serial.println(values[1]);
+}
+
+void initTFT() {
+  pinMode(TFT_RST, OUTPUT);
+  digitalWrite(TFT_RST, LOW);
+  delay(100);
+  digitalWrite(TFT_RST, HIGH);
+  delay(100);
+
+  tft.initR(INITR_MINI160x80_PLUGIN);
+  tft.fillScreen(ST77XX_BLACK);
+
+  tft.setRotation(45);
+}
+
+void resetTFT() {
+  pinMode(TFT_RST, OUTPUT);
+  digitalWrite(TFT_RST, LOW);
+  delay(100);
+  digitalWrite(TFT_RST, HIGH);
+  delay(100);
+}
+
+// display temperature in a disgusting way
+//                                                                                                                                                                a retkes kapucsengos turoval telepakolt hagyma-baconos gecis faszom belebaszom abba a gothes ebolas etiop kisgyerekek mellett jatszadozo mozdonyszurke hasmeneses kecske babgulyassal telepakolt seggebe
+void dispTemp(const char *label, float value, uint16_t color) {
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextWrap(false);
+
+  // --- Header (small) ---
+  tft.setTextSize(2);
+  tft.setTextColor(color);
+  int16_t bx, by;
+  uint16_t bw, bh;
+  tft.getTextBounds(label, 0, 0, &bx, &by, &bw, &bh);
+  int16_t headerX = (tft.width() - bw) / 2;
+  const int16_t headerY = 8;
+  tft.setCursor(headerX, headerY);
+  tft.print(label);
+
+  // --- Number (big) ---
+  char numStr[16];
+  snprintf(numStr, sizeof(numStr), "%.1f", value);  // only the numeric part
+
+  const uint8_t sizeNum = 3;  // big size for the number
+  tft.setTextSize(sizeNum);
+  tft.getTextBounds(numStr, 0, 0, &bx, &by, &bw, &bh);
+  uint16_t wNum = bw;
+  uint16_t hNum = bh;
+
+  // --- 'C' char (slightly smaller) ---
+  const uint8_t sizeC = (sizeNum > 1) ? (sizeNum - 1) : 1;
+  tft.setTextSize(sizeC);
+  int16_t bxC, byC;
+  uint16_t wC, hC;
+  tft.getTextBounds("C", 0, 0, &bxC, &byC, &wC, &hC);
+
+  // --- degree circle size & spacings ---
+  uint16_t degDiameter = hNum / 3;
+  if (degDiameter < 4) degDiameter = 4;
+  if (degDiameter > 12) degDiameter = 12;
+  const uint8_t spacingNumDeg = 4;
+  const uint8_t spacingDegC = 4;
+
+  // total width to center: [number][space][degree circle][space][C]
+  int16_t totalWidth = (int16_t)wNum + spacingNumDeg + (int16_t)degDiameter + spacingDegC + (int16_t)wC;
+  int16_t startX = (tft.width() - totalWidth) / 2;
+
+  // value vertical position: place it below header, roughly centered in remaining area
+  int16_t valueY = headerY + bh + 8 + ((tft.height() - (headerY + bh + 8) - (int16_t)hNum) / 2);
+
+  // --- draw the numeric value ---
+  tft.setTextSize(sizeNum);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(startX, valueY);
+  tft.print(numStr);
+
+  // --- draw the degree as a small filled circle (superscript-like) ---
+  int16_t circleCenterX = startX + wNum + spacingNumDeg + degDiameter / 2;
+  // put the circle a bit above the vertical center of the number
+  int16_t circleCenterY = valueY + (hNum / 4);
+  // this is fucking diabolical. fucking fucker celsius fuck you
+  tft.fillCircle(circleCenterX, circleCenterY, degDiameter / 2, ST77XX_WHITE);
+  tft.fillCircle(circleCenterX, circleCenterY, degDiameter / 2.5f, ST77XX_BLACK);
+
+  // --- draw the 'C' to the right of the circle ---
+  int16_t cX = startX + wNum + spacingNumDeg + degDiameter + spacingDegC;
+  // vertically align C roughly to the number baseline/center
+  int16_t cY = valueY + (hNum - hC) / 2;
+  tft.setTextSize(sizeNum);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(cX, cY);
+  tft.print("C");
+}
+
+void updateTFT() {
+  if (millis() - lastDisplayUpdate >= DISP_UPDATE_INT) {
+    lastDisplayUpdate = millis();
+    float current_temp = temp_humidity_sensor.readTemperature();
+
+    if (showCurrent) {
+      dispTemp("Current Temp", current_temp, ST77XX_CYAN);
+    } else {
+      dispTemp("Set Temp", set_temp, ST77XX_YELLOW);
+    }
+
+    showCurrent = !showCurrent;  // toggle for next cycle
+  }
 }
