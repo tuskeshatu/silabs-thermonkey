@@ -5,7 +5,6 @@
 */
 
 #include <ArduinoLowPower.h>
-#include <MatterBLE.h>
 
 #define QUERY_INTERVAL 5000
 #define BLE_TIMEOUT 10000
