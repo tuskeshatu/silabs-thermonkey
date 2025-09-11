@@ -52,7 +52,6 @@ static uint8_t ble_connection_handle = SL_BT_INVALID_CONNECTION_HANDLE;
 MatterThermostat matter_thermostat;
 static bool matter_commissioning = false;
 
-float set_temp = 22.5f;  // dummy
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -81,11 +80,16 @@ void setup() {
   if (!Matter.isDeviceCommissioned()) {
     Serial.println("Matter device is not commissioned");
     Serial.println("Commission it to your Matter hub with the manual pairing code or QR code");
-    const char * matter_pairing_code = Matter.getManualPairingCode().c_str();
+    const char *matter_pairing_code = Matter.getManualPairingCode().c_str();
     Serial.printf("Manual pairing code: %s\n", matter_pairing_code);
     dispWelcome(matter_pairing_code);
     Serial.printf("QR code URL: %s\n", Matter.getOnboardingQRCodeUrl().c_str());
     matter_commissioning = true;
+  } else {
+    // if commissioned decommission for testing
+    Serial.println("Matter device is commissioned");
+    Serial.println("Starting decommissioning process, device will reboot...");
+    Matter.decommission();
   }
 
   while (!Matter.isDeviceCommissioned()) {
@@ -265,8 +269,13 @@ static void ble_initialize_gatt_db() {
 /* Write + notify the two float values to connected client(s) */
 static void send_temperature_data() {
   sl_status_t sc;
+
   // read temp to send
   float current_temp = temp_humidity_sensor.readTemperature();
+  matter_thermostat.set_local_temperature(current_temp);
+
+  float set_temp = matter_thermostat.get_heating_setpoint();
+
   float values[2] = { set_temp, current_temp };
   uint8_t payload[sizeof(values)];
   memcpy(payload, values, sizeof(values));
@@ -405,7 +414,7 @@ void dispWelcome(const char *pairingCode) {
   tft.setCursor(subX, subY);
   tft.print(subStr);
 
-  delay(3000); // 3 sec
+  delay(3000);  // 3 sec
 
   tft.fillScreen(ST77XX_BLACK);
 
