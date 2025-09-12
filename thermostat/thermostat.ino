@@ -139,7 +139,11 @@ void matter_ble_on_event(sl_bt_msg_t *evt) {
     case sl_bt_evt_connection_opened_id:
       ble_connection_handle = evt->data.evt_connection_opened.connection;
       Serial.println("Client connected -> sending temps");
+      
+      if (!matter_commissioning){
       send_temperature_data();
+      }
+
       break;
 
     case sl_bt_evt_connection_closed_id:
