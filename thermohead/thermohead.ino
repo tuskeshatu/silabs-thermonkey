@@ -8,6 +8,7 @@
 
 #define QUERY_INTERVAL 5000
 #define BLE_TIMEOUT 10000
+#define MosfetPin (PA0)
 
 enum conn_state_t {
   ST_IDLE,
@@ -38,6 +39,8 @@ bool scanner_ready = false;
 static unsigned long timeout_start;
 
 static bool find_complete_local_name_in_advertisement(sl_bt_evt_scanner_legacy_advertisement_report_t * response);
+
+void Motor_drive(float, float);
 
 void setup()
 {
@@ -155,6 +158,7 @@ void sl_bt_on_event(sl_bt_msg_t * evt)
           Serial.println(values[0]);
           Serial.print("current_temp = ");
           Serial.println(values[1]);
+          Motor_drive(values[0], values[1]);
         }
         sl_bt_connection_close(connection_handle);
       }
@@ -190,4 +194,14 @@ static bool find_complete_local_name_in_advertisement(sl_bt_evt_scanner_legacy_a
     i += advertisement_length + 1;
   }
   return false;
+}
+
+void Motor_drive(float set, float curr){
+  float diff = set - curr;
+  int pwm = 0;
+  if (diff > 0.5){
+    pwm = constrain(diff*50, 0, 220);
+  }
+  else pwm = 0;
+  analogWrite(MosfetPin, pwm);
 }
