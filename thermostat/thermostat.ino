@@ -43,7 +43,7 @@ void dispWelcome(const char *pairingCode);
 // temp humidity onboard sensor
 Adafruit_Si7021 temp_humidity_sensor;
 
-static const uint8_t advertised_name[] = "BLE_THERMOSTAT";
+static const uint8_t ble_advertised_name[] = "BLE_THERMOSTAT";
 
 static uint16_t thermostat_service_handle;
 static uint16_t temps_characteristic_handle;
@@ -59,8 +59,11 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println();
+  Matter.begin();
+  matter_thermostat.begin();
   Serial.println("BLE Thermostat Server");
 
+  
   // Init the Si7021 temperature and humidity sensor
   pinMode(PC9, OUTPUT);
   digitalWrite(PC9, HIGH);
@@ -100,6 +103,7 @@ void setup() {
   Serial.println("Waiting for Thread network...");
   while (!Matter.isDeviceThreadConnected()) {
     delay(200);
+
   }
   Serial.println("Connected to Thread network");
 
@@ -126,7 +130,7 @@ void setup() {
 void loop() {
   // every 100ms update tft
   updateTFT();
-  delay(100);
+ 
 }
 
 // !!!MATTER!!! ble stack event handler
@@ -136,19 +140,23 @@ void matter_ble_on_event(sl_bt_msg_t *evt) {
   sl_status_t sc;
   switch (SL_BT_MSG_ID(evt->header)) {
 
+    case sl_bt_evt_system_boot_id:
+        Serial.begin(115200);
+        Serial.println("BLE stack booted");
+    break;
+
     case sl_bt_evt_connection_opened_id:
       ble_connection_handle = evt->data.evt_connection_opened.connection;
-      Serial.println("Client connected -> sending temps");
-      
-      if (!matter_commissioning){
-      send_temperature_data();
-      }
-
+      Serial.print("BLE connection opened; conn_handle=");
+      Serial.println(ble_connection_handle);
+      if (!matter_commissioning) {
+          send_temperature_data();
+       }
       break;
 
     case sl_bt_evt_connection_closed_id:
-      Serial.println("Connection closed, restarting advertising");
-      ble_start_advertising();
+      Serial.print("BLE connection closed; conn_handle=");
+      Serial.println(ble_connection_handle);
       ble_connection_handle = SL_BT_INVALID_CONNECTION_HANDLE;
       if (!matter_commissioning) {
         ble_start_advertising();
@@ -157,6 +165,8 @@ void matter_ble_on_event(sl_bt_msg_t *evt) {
       break;
 
     default:
+      Serial.print("BLE event: 0x");
+      Serial.println(SL_BT_MSG_ID(evt->header), HEX);
       break;
   }
 }
@@ -185,11 +195,19 @@ static void ble_start_advertising() {
   sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle, sl_bt_advertiser_general_discoverable);
   app_assert_status(sc);
 
+  // Add the Complete Local Name to the advertisement data
+  uint8_t adv_name_packet[sizeof(ble_advertised_name) + 1];
+  adv_name_packet[0] = sizeof(ble_advertised_name);
+  adv_name_packet[1] = 0x09;
+  memcpy(adv_name_packet + 2, ble_advertised_name, sizeof(ble_advertised_name) - 1);
+  sc = sl_bt_legacy_advertiser_set_data(advertising_set_handle, 0x09, sizeof(adv_name_packet), adv_name_packet);
+  app_assert_status(sc);
+
   sc = sl_bt_legacy_advertiser_start(advertising_set_handle, sl_bt_advertiser_connectable_scannable);
   app_assert_status(sc);
 
   Serial.print("Started advertising as '");
-  Serial.print((const char *)advertised_name);
+  Serial.print((const char *)ble_advertised_name);
   Serial.println("'...");
 }
 
@@ -222,9 +240,9 @@ static void ble_initialize_gatt_db() {
                                               0x00,
                                               device_name_characteristic_uuid,
                                               sl_bt_gattdb_fixed_length_value,
-                                              sizeof(advertised_name) - 1,
-                                              sizeof(advertised_name) - 1,
-                                              advertised_name,
+                                              sizeof(ble_advertised_name) - 1,
+                                              sizeof(ble_advertised_name) - 1,
+                                              ble_advertised_name,
                                               &name_characteristic_handle);
   app_assert_status(sc);
   sc = sl_bt_gattdb_start_service(gattdb_session_id, generic_access_service_handle);
