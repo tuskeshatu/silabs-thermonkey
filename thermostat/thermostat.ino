@@ -444,11 +444,12 @@ void dispWelcome(const char *pairingCode) {
 void updateTFT() {
   if (millis() - lastDisplayUpdate >= DISP_UPDATE_INT) {
     lastDisplayUpdate = millis();
-    float current_temp = temp_humidity_sensor.readTemperature();
 
     if (showCurrent) {
+      float current_temp = temp_humidity_sensor.readTemperature();
       dispTemp("Current Temp", current_temp, ST77XX_CYAN);
     } else {
+      float set_temp = matter_thermostat.get_heating_setpoint();
       dispTemp("Set Temp", set_temp, ST77XX_YELLOW);
     }
 
