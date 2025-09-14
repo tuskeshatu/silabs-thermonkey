@@ -9,6 +9,7 @@
 #define QUERY_INTERVAL 5000
 #define BLE_TIMEOUT 10000
 #define MosfetPin (PA0)
+#define MOTOR_ON_TIME 1000
 
 enum conn_state_t {
   ST_IDLE,
@@ -23,7 +24,7 @@ conn_state_t connection_state = ST_IDLE;
 uint8_t connection_handle = 0xFF;
 uint32_t thermostat_service_handle = 0;
 uint16_t temps_char_handle = 0;
-
+                        
 const uint8_t advertised_name[] = "BLE_THERMOSTAT";
 
 const uuid_128 thermostat_service_uuid = {
@@ -204,4 +205,6 @@ void Motor_drive(float set, float curr){
   }
   else pwm = 0;
   analogWrite(MosfetPin, pwm);
+  delay(MOTOR_ON_TIME);
+  analogWrite(MosfetPin, 0);
 }
