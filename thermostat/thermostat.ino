@@ -4,40 +4,54 @@
    - When a client connects the server writes+notifies the two floats (packed as two 32-bit floats => 8 bytes)
 */
 
+// matter includes
+#include <Matter.h>
+#include <MatterBLE.h>
+#include <MatterThermostat.h>
+
+// display and sensor includes
 #include <Adafruit_Si7021.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
 
+// display defines
 #define TFT_CS (PA7)
 #define TFT_RST (PD2)
 #define TFT_DC (PB0)
 #define TFT_MOSI (PC3)
 #define TFT_SCLK (PC1)
-#define DISP_UPDATE_INT 6000
+#define DISP_UPDATE_INT 6000  // display switch interval ms
 
+// display variables
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 unsigned long lastDisplayUpdate = 0;
 bool showCurrent = true;
 
+// BLE functions
 static void ble_initialize_gatt_db();
 static void ble_start_advertising();
 static void send_temperature_data();
 
+// display functions
 void resetTFT();
 void initTFT();
 void dispTemp(float current, float setpoint);
 void updateTFT();
+void dispWelcome(const char *pairingCode);
 
+// temp humidity onboard sensor
 Adafruit_Si7021 temp_humidity_sensor;
 
-static const uint8_t advertised_name[] = "BLE_THERMOSTAT";
+static const uint8_t ble_advertised_name[] = "BLE_THERMOSTAT";
 
 static uint16_t thermostat_service_handle;
 static uint16_t temps_characteristic_handle;
 static uint8_t ble_connection_handle = SL_BT_INVALID_CONNECTION_HANDLE;
 
-float set_temp = 22.5f;  // dummy
+MatterThermostat matter_thermostat;
+static bool matter_commissioning = false;
+
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -45,8 +59,11 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println();
+  Matter.begin();
+  matter_thermostat.begin();
   Serial.println("BLE Thermostat Server");
 
+  
   // Init the Si7021 temperature and humidity sensor
   pinMode(PC9, OUTPUT);
   digitalWrite(PC9, HIGH);
@@ -57,47 +74,104 @@ void setup() {
     Serial.println("Temperature and humidity sensor initialization successful");
   }
 
-  // init ble
-  ble_initialize_gatt_db();
-  ble_start_advertising();
-  Serial.println("BLE advertisement started");
-
   // init tft
   resetTFT();
   initTFT();
   Serial.println("TFT initialized");
+
+  // matter commisioning
+  if (!Matter.isDeviceCommissioned()) {
+    Serial.println("Matter device is not commissioned");
+    Serial.println("Commission it to your Matter hub with the manual pairing code or QR code");
+    const char *matter_pairing_code = Matter.getManualPairingCode().c_str();
+    Serial.printf("Manual pairing code: %s\n", matter_pairing_code);
+    dispWelcome(matter_pairing_code);
+    Serial.printf("QR code URL: %s\n", Matter.getOnboardingQRCodeUrl().c_str());
+    matter_commissioning = true;
+  } else {
+    // if commissioned decommission for testing
+    Serial.println("Matter device is commissioned");
+    Serial.println("Starting decommissioning process, device will reboot...");
+    Matter.decommission();
+  }
+
+  while (!Matter.isDeviceCommissioned()) {
+    delay(200);
+  }
+
+  // init thread
+  Serial.println("Waiting for Thread network...");
+  while (!Matter.isDeviceThreadConnected()) {
+    delay(200);
+
+  }
+  Serial.println("Connected to Thread network");
+
+  Serial.println("Waiting for Matter device discovery...");
+  while (!matter_thermostat.is_online()) {
+    delay(200);
+  }
+  Serial.println("Matter device is now online");
+
+  // Wait until the commissioning BLE device disconnects before interacting with the BLE stack
+  if (matter_commissioning) {
+    while (ble_connection_handle != SL_BT_INVALID_CONNECTION_HANDLE) {
+      yield();
+    }
+  }
+  matter_commissioning = false;
+
+  // matter commissioning finished, init ble
+  ble_initialize_gatt_db();
+  ble_start_advertising();
+  Serial.println("BLE advertisement started");
 }
 
 void loop() {
+  // every 100ms update tft
   updateTFT();
-  delay(100);
+ 
 }
 
-/* Bluetooth stack event handler */
-void sl_bt_on_event(sl_bt_msg_t *evt) {
+// !!!MATTER!!! ble stack event handler
+void matter_ble_on_event(sl_bt_msg_t *evt) {
+
+  // otherwhise same as sl ble stack
   sl_status_t sc;
   switch (SL_BT_MSG_ID(evt->header)) {
 
+    case sl_bt_evt_system_boot_id:
+        Serial.begin(115200);
+        Serial.println("BLE stack booted");
+    break;
+
     case sl_bt_evt_connection_opened_id:
       ble_connection_handle = evt->data.evt_connection_opened.connection;
-      Serial.println("Client connected -> sending temps");
-      send_temperature_data();
+      Serial.print("BLE connection opened; conn_handle=");
+      Serial.println(ble_connection_handle);
+      if (!matter_commissioning) {
+          send_temperature_data();
+       }
       break;
 
     case sl_bt_evt_connection_closed_id:
-      Serial.println("Connection closed, restarting advertising");
-      ble_start_advertising();
+      Serial.print("BLE connection closed; conn_handle=");
+      Serial.println(ble_connection_handle);
       ble_connection_handle = SL_BT_INVALID_CONNECTION_HANDLE;
-      ble_start_advertising();
-      Serial.println("BLE advertisement restarted");
+      if (!matter_commissioning) {
+        ble_start_advertising();
+        Serial.println("BLE advertisement restarted");
+      }
       break;
 
     default:
+      Serial.print("BLE event: 0x");
+      Serial.println(SL_BT_MSG_ID(evt->header), HEX);
       break;
   }
 }
 
-/*** advertising (same pattern as original example) ***/
+// advertising
 static void ble_start_advertising() {
   static uint8_t advertising_set_handle = 0xff;
   static bool init = true;
@@ -121,15 +195,23 @@ static void ble_start_advertising() {
   sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle, sl_bt_advertiser_general_discoverable);
   app_assert_status(sc);
 
+  // Add the Complete Local Name to the advertisement data
+  uint8_t adv_name_packet[sizeof(ble_advertised_name) + 1];
+  adv_name_packet[0] = sizeof(ble_advertised_name);
+  adv_name_packet[1] = 0x09;
+  memcpy(adv_name_packet + 2, ble_advertised_name, sizeof(ble_advertised_name) - 1);
+  sc = sl_bt_legacy_advertiser_set_data(advertising_set_handle, 0x09, sizeof(adv_name_packet), adv_name_packet);
+  app_assert_status(sc);
+
   sc = sl_bt_legacy_advertiser_start(advertising_set_handle, sl_bt_advertiser_connectable_scannable);
   app_assert_status(sc);
 
   Serial.print("Started advertising as '");
-  Serial.print((const char *)advertised_name);
+  Serial.print((const char *)ble_advertised_name);
   Serial.println("'...");
 }
 
-/*** GATT DB: Thermostat service + characteristic (8 bytes) ***/
+// GATT DB: Thermostat service + characteristic (8 bytes)
 static void ble_initialize_gatt_db() {
   static uint16_t gattdb_session_id;
   static uint16_t generic_access_service_handle;
@@ -158,9 +240,9 @@ static void ble_initialize_gatt_db() {
                                               0x00,
                                               device_name_characteristic_uuid,
                                               sl_bt_gattdb_fixed_length_value,
-                                              sizeof(advertised_name) - 1,
-                                              sizeof(advertised_name) - 1,
-                                              advertised_name,
+                                              sizeof(ble_advertised_name) - 1,
+                                              sizeof(ble_advertised_name) - 1,
+                                              ble_advertised_name,
                                               &name_characteristic_handle);
   app_assert_status(sc);
   sc = sl_bt_gattdb_start_service(gattdb_session_id, generic_access_service_handle);
@@ -209,8 +291,13 @@ static void ble_initialize_gatt_db() {
 /* Write + notify the two float values to connected client(s) */
 static void send_temperature_data() {
   sl_status_t sc;
+
   // read temp to send
   float current_temp = temp_humidity_sensor.readTemperature();
+  matter_thermostat.set_local_temperature(current_temp);
+
+  float set_temp = matter_thermostat.get_heating_setpoint();
+
   float values[2] = { set_temp, current_temp };
   uint8_t payload[sizeof(values)];
   memcpy(payload, values, sizeof(values));
@@ -252,7 +339,7 @@ void resetTFT() {
 }
 
 // display temperature in a disgusting way
-//                                                                                                                                                                a retkes kapucsengos turoval telepakolt hagyma-baconos gecis faszom belebaszom abba a gothes ebolas etiop kisgyerekek mellett jatszadozo mozdonyszurke hasmeneses kecske babgulyassal telepakolt seggebe
+// ennel sokkal rosszabb dolog a heten mar nem nagyon tortenhet velem. max ha el kell olvassam ezt a szart megegyszer.
 void dispTemp(const char *label, float value, uint16_t color) {
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextWrap(false);
@@ -323,14 +410,64 @@ void dispTemp(const char *label, float value, uint16_t color) {
   tft.print("C");
 }
 
+// welcome screen
+void dispWelcome(const char *pairingCode) {
+  // Hello.
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextWrap(false);
+
+  const char *helloStr = "Hello.";
+  int16_t bx, by;
+  uint16_t bw, bh;
+  tft.setTextSize(3);
+  tft.setTextColor(ST77XX_WHITE);
+
+  tft.getTextBounds(helloStr, 0, 0, &bx, &by, &bw, &bh);
+  int16_t helloX = (tft.width() - bw) / 2;
+  int16_t helloY = (tft.height() - bh) / 2 - 10;
+  tft.setCursor(helloX, helloY);
+  tft.print(helloStr);
+
+  const char *subStr = "THERMOnkey";
+  tft.setTextSize(2);
+  tft.getTextBounds(subStr, 0, 0, &bx, &by, &bw, &bh);
+  int16_t subX = (tft.width() - bw) / 2;
+  int16_t subY = helloY + bh + 10;
+  tft.setCursor(subX, subY);
+  tft.print(subStr);
+
+  delay(3000);  // 3 sec
+
+  tft.fillScreen(ST77XX_BLACK);
+
+  const char *headerStr = "Pairing Code:";
+  tft.setTextSize(2);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.getTextBounds(headerStr, 0, 0, &bx, &by, &bw, &bh);
+  int16_t headerX = (tft.width() - bw) / 2;
+  const int16_t headerY = 8;
+  tft.setCursor(headerX, headerY);
+  tft.print(headerStr);
+
+  tft.setTextSize(2);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.getTextBounds(pairingCode, 0, 0, &bx, &by, &bw, &bh);
+  int16_t codeX = (tft.width() - bw) / 2;
+  int16_t codeY = headerY + bh + (tft.height() - (headerY + bh) - bh) / 2;
+  tft.setCursor(codeX, codeY);
+  tft.print(pairingCode);
+}
+
+
 void updateTFT() {
   if (millis() - lastDisplayUpdate >= DISP_UPDATE_INT) {
     lastDisplayUpdate = millis();
-    float current_temp = temp_humidity_sensor.readTemperature();
 
     if (showCurrent) {
+      float current_temp = temp_humidity_sensor.readTemperature();
       dispTemp("Current Temp", current_temp, ST77XX_CYAN);
     } else {
+      float set_temp = matter_thermostat.get_heating_setpoint();
       dispTemp("Set Temp", set_temp, ST77XX_YELLOW);
     }
 

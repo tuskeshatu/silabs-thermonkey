@@ -12,7 +12,6 @@
 #define dir1Pin  (PB4)  // direction 1
 #define dir2Pin  (PB5)  // direction 2
 
-
 enum conn_state_t {
   ST_IDLE,
   ST_SCAN,
@@ -26,7 +25,7 @@ conn_state_t connection_state = ST_IDLE;
 uint8_t connection_handle = 0xFF;
 uint32_t thermostat_service_handle = 0;
 uint16_t temps_char_handle = 0;
-
+                        
 const uint8_t advertised_name[] = "BLE_THERMOSTAT";
 
 const uuid_128 thermostat_service_uuid = {
