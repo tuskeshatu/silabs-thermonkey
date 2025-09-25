@@ -8,8 +8,9 @@
 
 #define QUERY_INTERVAL 5000
 #define BLE_TIMEOUT 10000
-#define MosfetPin (PA0)
-#define MOTOR_ON_TIME 1000
+#define pwmPin (PA0)
+#define dir1Pin  (PB4)  // direction 1
+#define dir2Pin  (PB5)  // direction 2
 
 enum conn_state_t {
   ST_IDLE,
@@ -43,6 +44,10 @@ static bool find_complete_local_name_in_advertisement(sl_bt_evt_scanner_legacy_a
 
 void Motor_drive(float, float);
 
+void motor_set(float, bool);
+
+void motor_stop();
+
 void setup()
 {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -52,6 +57,16 @@ void setup()
   Serial.println();
   Serial.println("BLE Thermostat Client");
   timeout_start = millis();
+  motor_init();
+}
+
+void motor_init() {
+  pinMode(pwmPin, OUTPUT);
+  pinMode(dir1Pin, OUTPUT);
+  pinMode(dir2Pin, OUTPUT);
+  digitalWrite(dir1Pin, LOW);
+  digitalWrite(dir2Pin, LOW);
+  analogWrite(pwmPin, 0);
 }
 
 void loop()
@@ -197,14 +212,34 @@ static bool find_complete_local_name_in_advertisement(sl_bt_evt_scanner_legacy_a
   return false;
 }
 
-void Motor_drive(float set, float curr){
-  float diff = set - curr;
-  int pwm = 0;
-  if (diff > 0.5){
-    pwm = constrain(diff*50, 0, 220);
+
+void motor_set(float speed, bool forward) {
+  if (forward) {
+    digitalWrite(dir1Pin, HIGH);
+    digitalWrite(dir2Pin, LOW);
+  } else {
+    digitalWrite(dir1Pin, LOW);
+    digitalWrite(dir2Pin, HIGH);
   }
-  else pwm = 0;
-  analogWrite(MosfetPin, pwm);
-  delay(MOTOR_ON_TIME);
-  analogWrite(MosfetPin, 0);
+  analogWrite(pwmPin, constrain(speed*50, 0, 225));
+  delay(2000);
+  motor_stop();
+}
+
+void motor_stop() {
+  analogWrite(pwmPin, 0);
+  digitalWrite(dir1Pin, LOW);
+  digitalWrite(dir2Pin, LOW);
+}
+
+void Motor_drive(float setTemp, float currentTemp){
+  const int tolerance = 0.5;
+  int speed = abs(setTemp - currentTemp);
+  if (setTemp > currentTemp + tolerance) {
+    // spin forward
+    motor_set(speed, true);
+  } else if (setTemp < currentTemp - tolerance) {
+    // spin backward
+    motor_set(speed, false);
+  } else motor_stop();
 }
